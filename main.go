@@ -35,8 +35,7 @@ func main() {
 	flag.Parse()
 
 	opts := providerserver.ServeOpts{
-		// TODO: Update this string with the published name of your provider.
-		Address: "registry.terraform.io/netapp/netapp-ontap",
+		Address: "registry.terraform.io/chris-cmsoft/netapp-ontap",
 		Debug:   debug,
 	}
 

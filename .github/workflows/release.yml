@@ -1,0 +1,81 @@
+name: Build signed provider release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag on release-proxy (for example v2.7.1-proxy.1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provider-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'chris-cmsoft/terraform-provider-netapp-ontap' && github.ref == 'refs/heads/release-proxy'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Check out release branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate and check out release tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v2\.7\.1-proxy\.[0-9]+$ ]]
+          git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}"
+          git merge-base --is-ancestor "refs/tags/$RELEASE_TAG^{commit}" HEAD
+          git checkout --detach "refs/tags/$RELEASE_TAG"
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check proxy regression and static analysis
+        run: |
+          go test ./internal/restclient/httpclient -run '^TestHTTPClient' -count=1
+          go vet ./...
+
+      - name: Import release signing key
+        id: gpg
+        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.PASSPHRASE }}
+
+      - name: Verify signing key identity
+        env:
+          SIGNING_FINGERPRINT: ${{ steps.gpg.outputs.fingerprint }}
+        run: |
+          [[ "$SIGNING_FINGERPRINT" == *B1B18BE58DA3FCD4 ]]
+
+      - name: Build and sign draft release
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          distribution: goreleaser
+          version: v2.18.3
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ steps.gpg.outputs.fingerprint }}
+
+      - name: Verify release checksums and signature
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          gpg --verify dist/*_SHA256SUMS.sig dist/*_SHA256SUMS
+          cp terraform-registry-manifest.json "dist/terraform-provider-netapp-ontap_${RELEASE_TAG#v}_manifest.json"
+          cd dist
+          sha256sum --check *_SHA256SUMS
